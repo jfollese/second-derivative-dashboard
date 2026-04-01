@@ -98,24 +98,65 @@ POLYMARKET_DISCOVER_KEYWORDS = [
 # Data fetching
 # ---------------------------------------------------------------------------
 
+def _fetch_yahoo_v8(ticker: str, period: str = '9mo') -> pd.Series:
+    """Fetch a single ticker via Yahoo Finance v8 chart API (cloud-friendly)."""
+    import requests
+    url = f"https://query1.finance.yahoo.com/v8/finance/chart/{ticker}"
+    params = {'range': period, 'interval': '1d', 'includePrePost': 'false'}
+    headers = {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
+        'Accept': 'application/json',
+    }
+    try:
+        r = requests.get(url, params=params, headers=headers, timeout=12)
+        if r.status_code != 200:
+            return pd.Series(dtype=float, name=ticker)
+        data = r.json()
+        result = data.get('chart', {}).get('result', [])
+        if not result:
+            return pd.Series(dtype=float, name=ticker)
+        timestamps = result[0].get('timestamp', [])
+        closes = result[0].get('indicators', {}).get('quote', [{}])[0].get('close', [])
+        if not timestamps or not closes:
+            return pd.Series(dtype=float, name=ticker)
+        dates = pd.to_datetime(timestamps, unit='s').normalize()
+        s = pd.Series(closes, index=dates, name=ticker, dtype=float)
+        return s.dropna()
+    except Exception as e:
+        print(f"Yahoo v8 error for {ticker}: {e}")
+        return pd.Series(dtype=float, name=ticker)
+
+
 def fetch_yahoo_data() -> pd.DataFrame:
-    """Download closing prices for all tickers from Yahoo Finance."""
+    """Download closing prices for all tickers. Tries yfinance first, falls back to v8 API."""
     end = datetime.now()
     start = end - timedelta(days=LOOKBACK_DAYS + 60)
-    tickers_str = ' '.join(ALL_TICKERS)
+
+    # Try yfinance bulk download first (fast when it works)
     try:
+        tickers_str = ' '.join(ALL_TICKERS)
         raw = yf.download(tickers_str, start=start, end=end, auto_adjust=True, progress=False)
-        if raw.empty:
-            return pd.DataFrame()
-        if isinstance(raw.columns, pd.MultiIndex):
-            prices = raw['Close']
-        else:
-            prices = raw[['Close']].copy()
-            prices.columns = ALL_TICKERS[:1]
-        return prices
+        if not raw.empty:
+            if isinstance(raw.columns, pd.MultiIndex):
+                prices = raw['Close']
+            else:
+                prices = raw[['Close']].copy()
+                prices.columns = ALL_TICKERS[:1]
+            if len(prices.columns) > 5:  # Got meaningful data
+                return prices
     except Exception as e:
-        print(f"Yahoo fetch error: {e}")
-        return pd.DataFrame()
+        print(f"yfinance bulk failed ({e}), falling back to v8 API...")
+
+    # Fallback: fetch each ticker individually via v8 API
+    print("Using Yahoo v8 chart API fallback...")
+    frames = {}
+    for ticker in ALL_TICKERS:
+        s = _fetch_yahoo_v8(ticker)
+        if not s.empty:
+            frames[ticker] = s
+    if frames:
+        return pd.DataFrame(frames)
+    return pd.DataFrame()
 
 
 def _http_get(url: str, timeout: int = 15) -> str:
