@@ -98,17 +98,39 @@ POLYMARKET_DISCOVER_KEYWORDS = [
 # Data fetching
 # ---------------------------------------------------------------------------
 
-def _fetch_yahoo_v8(ticker: str, period: str = '9mo') -> pd.Series:
-    """Fetch a single ticker via Yahoo Finance v8 chart API (cloud-friendly)."""
+def _get_yahoo_crumb():
+    """Get a Yahoo Finance crumb+cookies for authenticated API access (works from cloud)."""
     import requests
+    session = requests.Session()
+    session.headers.update({
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
+    })
+    try:
+        # First get cookies from Yahoo Finance
+        session.get('https://finance.yahoo.com/', timeout=10)
+        # Then get crumb
+        r = session.get('https://query2.finance.yahoo.com/v1/test/getcrumb', timeout=10)
+        if r.status_code == 200 and r.text:
+            return session, r.text
+    except Exception:
+        pass
+    return session, None
+
+
+def _fetch_yahoo_v8(ticker: str, session=None, crumb=None, period: str = '9mo') -> pd.Series:
+    """Fetch a single ticker via Yahoo Finance v8 chart API."""
+    import requests
+    if session is None:
+        session = requests.Session()
+        session.headers.update({
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+        })
     url = f"https://query1.finance.yahoo.com/v8/finance/chart/{ticker}"
     params = {'range': period, 'interval': '1d', 'includePrePost': 'false'}
-    headers = {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
-        'Accept': 'application/json',
-    }
+    if crumb:
+        params['crumb'] = crumb
     try:
-        r = requests.get(url, params=params, headers=headers, timeout=12)
+        r = session.get(url, params=params, timeout=12)
         if r.status_code != 200:
             return pd.Series(dtype=float, name=ticker)
         data = r.json()
@@ -128,11 +150,11 @@ def _fetch_yahoo_v8(ticker: str, period: str = '9mo') -> pd.Series:
 
 
 def fetch_yahoo_data() -> pd.DataFrame:
-    """Download closing prices for all tickers. Tries yfinance first, falls back to v8 API."""
+    """Download closing prices. Tries yfinance bulk, then v8 API with crumb auth."""
     end = datetime.now()
     start = end - timedelta(days=LOOKBACK_DAYS + 60)
 
-    # Try yfinance bulk download first (fast when it works)
+    # Try yfinance bulk download first (fast when it works, e.g. locally)
     try:
         tickers_str = ' '.join(ALL_TICKERS)
         raw = yf.download(tickers_str, start=start, end=end, auto_adjust=True, progress=False)
@@ -142,18 +164,27 @@ def fetch_yahoo_data() -> pd.DataFrame:
             else:
                 prices = raw[['Close']].copy()
                 prices.columns = ALL_TICKERS[:1]
-            if len(prices.columns) > 5:  # Got meaningful data
+            if len(prices.columns) > 5:
                 return prices
     except Exception as e:
-        print(f"yfinance bulk failed ({e}), falling back to v8 API...")
+        print(f"yfinance bulk failed ({e}), trying v8 API with crumb...")
 
-    # Fallback: fetch each ticker individually via v8 API
-    print("Using Yahoo v8 chart API fallback...")
+    # Fallback: get crumb for authenticated access, then fetch individually
+    print("Using Yahoo v8 chart API with crumb authentication...")
+    session, crumb = _get_yahoo_crumb()
+    if crumb:
+        print(f"Got Yahoo crumb: {crumb[:8]}...")
+    else:
+        print("Warning: No crumb obtained, trying without...")
+
     frames = {}
     for ticker in ALL_TICKERS:
-        s = _fetch_yahoo_v8(ticker)
+        s = _fetch_yahoo_v8(ticker, session=session, crumb=crumb)
         if not s.empty:
             frames[ticker] = s
+        import time
+        time.sleep(0.3)  # Rate limit: ~3 requests/sec
+    print(f"Fetched {len(frames)}/{len(ALL_TICKERS)} tickers via v8 API")
     if frames:
         return pd.DataFrame(frames)
     return pd.DataFrame()
