@@ -118,27 +118,34 @@ def fetch_yahoo_data() -> pd.DataFrame:
         return pd.DataFrame()
 
 
+def _http_get(url: str, timeout: int = 15) -> str:
+    """HTTP GET with curl_cffi if available, else plain requests."""
+    try:
+        from curl_cffi import requests as cffi_requests
+        r = cffi_requests.get(url, impersonate="chrome", timeout=timeout)
+        if r.status_code == 200:
+            return r.text
+    except ImportError:
+        pass
+    except Exception:
+        pass
+    import requests
+    r = requests.get(url, timeout=timeout,
+                     headers={'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'})
+    if r.status_code == 200:
+        return r.text
+    return None
+
+
 def fetch_fred_series(series_id: str) -> pd.Series:
     """Fetch a FRED series via the public CSV endpoint (no API key)."""
     import io
     url = f"https://fred.stlouisfed.org/graph/fredgraph.csv?id={series_id}"
-    text = None
     try:
-        from curl_cffi import requests as cffi_requests
-        r = cffi_requests.get(url, impersonate="chrome", timeout=15)
-        if r.status_code == 200:
-            text = r.text
-    except Exception:
-        pass
-    if text is None:
-        try:
-            import requests
-            r = requests.get(url, timeout=15)
-            if r.status_code == 200:
-                text = r.text
-        except Exception as e:
-            print(f"FRED fetch error for {series_id}: {e}")
-            return pd.Series(dtype=float, name=series_id)
+        text = _http_get(url)
+    except Exception as e:
+        print(f"FRED fetch error for {series_id}: {e}")
+        return pd.Series(dtype=float, name=series_id)
     if text:
         try:
             df = pd.read_csv(io.StringIO(text))
@@ -169,15 +176,12 @@ def fetch_fred_data() -> pd.DataFrame:
     return pd.DataFrame()
 
 
-def _fetch_single_polymarket(slug: str, name: str, category: str, session) -> dict:
+def _fetch_single_polymarket(slug: str, name: str, category: str) -> dict:
     """Fetch a single Polymarket market by slug."""
     try:
-        resp = session.get(
-            f'https://gamma-api.polymarket.com/markets?slug={slug}',
-            impersonate='chrome', timeout=8
-        )
-        if resp.status_code == 200:
-            data = resp.json()
+        text = _http_get(f'https://gamma-api.polymarket.com/markets?slug={slug}', timeout=8)
+        if text:
+            data = json.loads(text)
             if data:
                 m = data[0]
                 prices = m.get('outcomePrices', '[]')
@@ -199,15 +203,11 @@ def _fetch_single_polymarket(slug: str, name: str, category: str, session) -> di
 def fetch_polymarket_prices() -> dict:
     """Fetch current prices from configured + auto-discovered Polymarket markets."""
     results = {}
-    try:
-        from curl_cffi import requests as cffi_requests
-    except ImportError:
-        return results
 
     # 1. Fetch configured markets
     for market in POLYMARKET_MARKETS:
         info = _fetch_single_polymarket(market['slug'], market['name'],
-                                         market['category'], cffi_requests)
+                                         market['category'])
         if info:
             results[market['name']] = info
 
@@ -216,12 +216,12 @@ def fetch_polymarket_prices() -> dict:
         try:
             all_markets = []
             for offset in [0, 100, 200]:
-                resp = cffi_requests.get(
+                text = _http_get(
                     f'https://gamma-api.polymarket.com/markets?limit=100&offset={offset}&active=true&closed=false',
-                    impersonate='chrome', timeout=12
+                    timeout=12
                 )
-                if resp.status_code == 200:
-                    all_markets.extend(resp.json())
+                if text:
+                    all_markets.extend(json.loads(text))
 
             for m in all_markets:
                 q = m.get('question', '').lower()

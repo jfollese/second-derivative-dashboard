@@ -25,7 +25,10 @@ app = dash.Dash(
 server = app.server
 
 data = DashboardData()
-data.refresh()
+try:
+    data.refresh()
+except Exception as e:
+    print(f"Initial data refresh failed (will retry on first page load): {e}")
 
 # ---------------------------------------------------------------------------
 # Chart helpers
@@ -337,8 +340,11 @@ app.layout = html.Div(id='app-container', children=[
     Input('refresh-interval', 'n_intervals'),
 )
 def update_dashboard(n):
-    if n > 0:
-        data.refresh()
+    if n > 0 or data.last_updated is None:
+        try:
+            data.refresh()
+        except Exception as e:
+            print(f"Data refresh error: {e}")
 
     # --- Convergence banner ---
     bearish, total = data.convergence_score()
