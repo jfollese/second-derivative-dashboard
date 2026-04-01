@@ -97,16 +97,23 @@ POLYMARKET_DISCOVER_KEYWORDS = [
 # HTTP helper
 # ---------------------------------------------------------------------------
 
-def _http_get(url: str, timeout: int = 15) -> str:
-    """HTTP GET with browser-like headers."""
+def _http_get(url: str, timeout: int = 30, retries: int = 2) -> str:
+    """HTTP GET with retries for slow cloud servers."""
     import requests
     headers = {
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
         'Accept': 'text/html,application/json,text/csv,*/*',
     }
-    r = requests.get(url, headers=headers, timeout=timeout)
-    if r.status_code == 200:
-        return r.text
+    for attempt in range(retries + 1):
+        try:
+            r = requests.get(url, headers=headers, timeout=timeout)
+            if r.status_code == 200:
+                return r.text
+        except Exception as e:
+            if attempt < retries:
+                time.sleep(2)
+            else:
+                print(f"HTTP GET failed after {retries+1} attempts: {url[:60]}... - {e}")
     return None
 
 
